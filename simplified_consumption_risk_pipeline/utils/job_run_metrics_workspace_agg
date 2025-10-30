@@ -1,0 +1,48 @@
+import dlt
+from pyspark.sql.functions import *
+from utils.confloader import load_confs
+
+# Load pipeline configuration
+load_start_date = load_confs(spark)
+        
+       # )
+
+@dlt.table()
+def job_utilization_risk():
+    ju = spark.read.table("job_runs_cluster_utilization")
+    wi = spark.read.table("workload_insights_view")
+    wmv = spark.read.table("workspace_mapping_view")
+
+    result = (
+        ju.join(
+            wmv,
+            ["date", "workspaceId", "sfdcAccountId"],
+            "inner",
+        )
+        .select(
+            ju["*"],
+            wmv.sfdcAccountId,
+            wmv.accountId,
+            wmv.sfdc_workspace_name,
+            wmv.industry_vertical,
+            wmv.bu,
+            wmv.region,
+            wmv.bu_1,
+            wmv.bu_2,
+            wmv.bu_3,
+            wmv.sfdc_account_name,
+            wmv.account_name,
+            wmv.dbrx_account_owner,
+        )
+        .
+        .withColumn(
+            "revAtRisk",
+            col("attributedRevenue")
+            * (
+                col("allPurposePenalty")
+                + col("utilizationPenalty")
+                - col("allPurposePenalty") * col("utilizationPenalty")
+            ),
+        )
+    )
+    return result

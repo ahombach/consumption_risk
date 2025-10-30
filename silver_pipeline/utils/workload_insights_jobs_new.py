@@ -9,6 +9,39 @@ cpu_threshold = 30
 
 
 @dlt.view
+def workload_insights_view():
+    return (
+        spark.table("main.data_featurekpi.workload_insights")
+        .where(col("date") >= load_start_date)
+        .selectExpr(
+            "date",
+            "clusterId",
+            "workloadId",
+            "workspaceId",
+            "sfdcAccountId",
+            "workloadTags.jobId AS jobId",
+            "workloadTags.runId AS runId",
+            "workloadName",
+            "sku",
+            "productType",
+            """
+            CASE 
+                WHEN lower(workloadTags.runTerminalState) = 'running' THEN lower(workloadTags.commandStatus)
+                WHEN workloadTags.runTerminalState IS NOT NULL THEN lower(workloadTags.runTerminalState)
+                WHEN workloadTags.runTerminalState IS NULL AND workloadTags.commandStatus IS NOT NULL THEN lower(workloadTags.commandStatus)
+                WHEN workloadTags.runTerminalState IS NULL AND workloadTags.commandStatus IS NULL THEN lower(workloadTags.dltState)
+                ELSE 'unknown'
+            END AS workloadStatus
+            """,
+            "attributedRevenue",
+            "attributedInfo.attributedDriverDbus AS attributedDriverDbus",
+            "attributedInfo.attributedWorkerDbus AS attributedWorkerDbus",
+        )
+        .where("jobId IS NOT NULL AND runId IS NOT NULL")
+    )
+
+
+@dlt.view
 def workspace_customer_mapping_date_filter_view():
     return spark.table(
         "integration.field_mfg_labs.dlt_silver_workspace_customer_mapping"
@@ -20,7 +53,7 @@ def silver_workload_insights_jobs():
     jr = spark.read.table("dlt_silver_jobs_utilization").where(
         col("date") >= load_start_date
     )
-    wi = spark.read.table("workload_insights_view").where("jobId IS NOT NULL AND runId IS NOT NULL")
+    wi = spark.read.table("workload_insights_view")
     wcm = spark.read.table("workspace_customer_mapping_date_filter_view")
 
     result = (
@@ -121,42 +154,50 @@ def silver_workload_insights_jobs():
         )
         .withColumn(
             "allPurposePenalty",
-            when(col("productType") != "JOBS", lit(0.6))  # approximation for now, need to pull in cloud and add cases for azure vs AWS since pricing is different
-            .otherwise(lit(0))
-        )
-        .withColumn(
-            "utilizationPenalty",
-            (
+            when(col("productType") == "JOBS", lit(0))
+            # .when(
+            #     (col("productType") != "JOBS") & (col("sku").startswith("ENTERPRISE")),
+            #     lit(0.692),
+            # )
+            # .when(
+            #     (col("productType") != "JOBS") & (col("sku").startswith("PREMIUM")),
+            #     lit(0.727),
+            )
+            .when((col('productType') != "JOBS"), lit(0.6)) # approximation for now, need to pull in cloud and add cases for azure vs AWS since pricing is different
+            .otherwise(lit(None))
+            .withColumn(
+                "utilizationPenalty",
                 (
-                    greatest(
-                        lit(cpu_threshold) - col("avg_cluster_cpu_utilization"),
-                        lit(0),
+                    (
+                        greatest(
+                            lit(cpu_threshold) - col("avg_cluster_cpu_utilization"),
+                            lit(0),
+                        )
+                        / lit(cpu_threshold)
                     )
-                    / lit(cpu_threshold)
-                )
-                + (
-                    greatest(
-                        lit(mem_threshold) - col("avg_cluster_mem_used_percent"),
-                        lit(0),
+                    + (
+                        greatest(
+                            lit(mem_threshold) - col("avg_cluster_mem_used_percent"),
+                            lit(0),
+                        )
+                        / lit(mem_threshold)
                     )
-                    / lit(mem_threshold)
-                )
-            )/2,
-        )
-        .withColumn(
-            "revAtRiskUtilization",
-            col("attributedRevenue") * col("utilizationPenalty"))
-        .withColumn(
-            "revAtRiskAllPurpose",
-            col("allPurposePenalty")*(col("attributedRevenue")-col("attributedRevenue")*col("utilizationPenalty"))
-        )
-        .withColumn(
-            "revAtRisk",
-            col("attributedRevenue")
-            * (
-                col("allPurposePenalty")
-                + col("utilizationPenalty")
-                - col("allPurposePenalty") * col("utilizationPenalty")
+                ),
+            )
+            .withColumn(
+                "revAtRiskUtilization",
+                col("attributedRevenue") * col("utilizationPenalty"))
+            .withColumn(
+                "revAtRiskAllPurpose",
+                col("allPurposePenalty")*(col("attributedRevenue")-col("attributedRevenue")*col("utilizationPenalty"))
+            .withColumn(
+                "revAtRisk",
+                col("attributedRevenue")
+                * (
+                    col("allPurposePenalty")
+                    + col("utilizationPenalty")
+                    - col("allPurposePenalty") * col("utilizationPenalty")
+                ),
             ),
         )
     )
